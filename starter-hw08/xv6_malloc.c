@@ -4,19 +4,34 @@
 #include "user.h"
 #include "param.h"
 */
-
 #include "xmalloc.h"
+#include <sys/mman.h>
+
+
+#define EXIT_FAILURE 1
+
+#define handle_error(msg) \
+  do { perror(msg); exit(EXIT_FAILURE); } while (0)
+
 
 // Memory allocator by Kernighan and Ritchie,
 // The C programming Language, 2nd ed.  Section 8.7.
 //
 // Then copied from xv6.
 
-// TODO: Remove this stuff
-typedef unsigned long uint;
-static char* sbrk(uint nn) { return 0; }
-// TODO: end of stuff to remove
+// Custom api that allocates a page
+// nn : size in bytes , based on which it would allocate
+// number of required pages
+// offset : Distance from start of page where the address
+// need to be returned 
+static char* mmap_palloc(int nn,int offset)
+{
+  char *addr = mmap(NULL,nn,PROT_WRITE,MAP_ANONYMOUS,-1,offset);
+  if(addr == MAP_FAILED)
+    handle_error("mmap_malloc");
 
+  return addr;  
+}
 
 typedef long Align;
 
@@ -30,7 +45,50 @@ union header {
 
 typedef union header Header;
 
-// TODO: This is shared global data.
+pthread_mutex_t malloc_lock; 
+
+// Flag to check for mutex init done or not . 
+int isInitDone = 0;
+
+// Below api initialises a single mutex to protect
+// all the memory related ops for xv6 OS as below . 
+void xmutex_init()
+{
+  if(pthread_mutex_init(&malloc_lock,NULL)!=0)
+  {
+    handle_error("pthread_mutex_init!");	  
+  }	  
+}
+
+// Grabs the lock for xv6 memory operations
+void xmutex_lock()
+{
+
+  // If flag is zero then initialise it and forget it :P
+  // so that process exit can destroy it.  
+  if(isInitDone == 0)
+  {
+    xmutex_init();
+    isInitDone = 1;	
+  }
+  
+  if(pthread_mutex_lock(&malloc_lock)!=0)
+  {
+    handle_error("pthread_mutex_lock!");	  
+  }	  	
+}
+
+// Unlocks the mutex for xv6 memory operations
+void xmutex_unlock()
+{
+  if(pthread_mutex_unlock(&malloc_lock)!=0)
+  {
+    handle_error("pthread_mutex_unlock!");	  
+  }	  	
+}
+
+
+// This is shared global data.
 // You're going to want a mutex to protect this.
 static Header base;
 static Header *freep;
@@ -38,6 +96,7 @@ static Header *freep;
 void
 xfree(void *ap)
 {
+  xmutex_lock();	
   Header *bp, *p;
 
   bp = (Header*)ap - 1;
@@ -55,29 +114,35 @@ xfree(void *ap)
   } else
     p->s.ptr = bp;
   freep = p;
-}
+  xmutex_unlock();	
+} 
 
 static Header*
 morecore(uint nu)
 {
+  xmutex_lock();	
   char *p;
   Header *hp;
 
   if(nu < 4096)
     nu = 4096;
-  // TODO: Replace sbrk use with mmap
-  p = sbrk(nu * sizeof(Header));
+  
+  p = mmap_palloc(nu*sizeof(Header),0);
+
   if(p == (char*)-1)
     return 0;
   hp = (Header*)p;
   hp->s.size = nu;
   xfree((void*)(hp + 1));
+  xmutex_unlock();	
   return freep;
 }
 
 void*
 xmalloc(uint nbytes)
 {
+  xmutex_lock();	
+
   Header *p, *prevp;
   uint nunits;
 
@@ -102,6 +167,8 @@ xmalloc(uint nbytes)
       if((p = morecore(nunits)) == 0)
         return 0;
   }
+  xmutex_unlock();	
+ 
 }
 
 void*
