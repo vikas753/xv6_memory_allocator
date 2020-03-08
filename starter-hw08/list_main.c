@@ -112,10 +112,9 @@ worker(void* _arg)
     return 0;
 }
 
-
 int
 main(int argc, char* argv[])
-{	    
+{
     pthread_t threads[THREADS];
     int rv;
 
