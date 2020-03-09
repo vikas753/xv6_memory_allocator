@@ -5,6 +5,7 @@
 #include "param.h"
 */
 #include "xmalloc.h"
+#include <string.h>
 #include <sys/mman.h>
 
 
@@ -147,7 +148,8 @@ xmalloc(uint nbytes)
   uint nunits;
 
   nunits = (nbytes + sizeof(Header) - 1)/sizeof(Header) + 1;
-  if((prevp = freep) == 0){
+  if((prevp = freep) == 0)
+  {
     base.s.ptr = freep = prevp = &base;
     base.s.size = 0;
   }
@@ -174,6 +176,19 @@ xmalloc(uint nbytes)
 void*
 xrealloc(void* prev, size_t nn)
 {
-  // TODO: Actually build realloc.
+  Header *bp;
+
+  bp = (Header*)prev - 1;
+
+  // Allocate a buffer of that size , copy the contents of existing buffer
+  // into that and return the pointer to the same
+  void* allocPtr = (void*)xmalloc(nn);
+  // Below math is just a reverse engineer of calculation of number of units
+  // of buffer 
+  bufferSizeBytes = (bp->s.size - 1) * sizeof(Header) + 1 - sizeof(Header); 
+  memcpy(allocPtr , bp->s.ptr , bufferSizeBytes);
+  xfree(prev);
+  prev = allocPtr;
+  
   return prev;
 }
