@@ -25,9 +25,9 @@
 // number of required pages
 // offset : Distance from start of page where the address
 // need to be returned 
-static char* mmap_palloc(int nn,int offset)
+static char* mmap_palloc(int nn)
 {
-  char *addr = mmap(NULL,nn,PROT_WRITE,MAP_ANONYMOUS,-1,offset);
+  char *addr = mmap(NULL,nn,PROT_READ|PROT_WRITE,MAP_ANONYMOUS|MAP_SHARED,-1,0);
   if(addr == MAP_FAILED)
     handle_error("mmap_malloc");
 
@@ -46,43 +46,48 @@ union header {
 
 typedef union header Header;
 
-pthread_mutex_t malloc_lock; 
+#define NUM_LOCKS 2
+
+pthread_mutex_t lock_array[NUM_LOCKS];
+
+#define MALLOC_LOCK_INDEX 0
+#define FREE_LOCK_INDEX   1
 
 // Flag to check for mutex init done or not . 
-int isInitDone = 0;
+int isInitDone[NUM_LOCKS] = {0};
 
 // Below api initialises a single mutex to protect
 // all the memory related ops for xv6 OS as below . 
-void xmutex_init()
+void xmutex_init(int lock_index)
 {
-  if(pthread_mutex_init(&malloc_lock,NULL)!=0)
+  if(pthread_mutex_init(&lock_array[lock_index],NULL)!=0)
   {
     handle_error("pthread_mutex_init!");	  
   }	  
 }
 
 // Grabs the lock for xv6 memory operations
-void xmutex_lock()
+void xmutex_lock(int lock_index)
 {
 
   // If flag is zero then initialise it and forget it :P
   // so that process exit can destroy it.  
-  if(isInitDone == 0)
+  if(isInitDone[lock_index] == 0)
   {
-    xmutex_init();
-    isInitDone = 1;	
+	xmutex_init(lock_index);
+    isInitDone[lock_index] = 1;	
   }
   
-  if(pthread_mutex_lock(&malloc_lock)!=0)
+  if(pthread_mutex_lock(&lock_array[lock_index])!=0)
   {
     handle_error("pthread_mutex_lock!");	  
   }	  	
 }
 
 // Unlocks the mutex for xv6 memory operations
-void xmutex_unlock()
+void xmutex_unlock(int lock_index)
 {
-  if(pthread_mutex_unlock(&malloc_lock)!=0)
+  if(pthread_mutex_unlock(&lock_array[lock_index])!=0)
   {
     handle_error("pthread_mutex_unlock!");	  
   }	  	
@@ -97,10 +102,12 @@ static Header *freep;
 void
 xfree(void *ap)
 {
-  xmutex_lock();	
+  
   Header *bp, *p;
 
   bp = (Header*)ap - 1;
+  xmutex_lock(MALLOC_LOCK_INDEX);
+  
   for(p = freep; !(bp > p && bp < p->s.ptr); p = p->s.ptr)
     if(p >= p->s.ptr && (bp > p || bp < p->s.ptr))
       break;
@@ -114,40 +121,39 @@ xfree(void *ap)
     p->s.ptr = bp->s.ptr;
   } else
     p->s.ptr = bp;
-  freep = p;
-  xmutex_unlock();	
+  freep = p; 
+  xmutex_unlock(MALLOC_LOCK_INDEX);	
 } 
 
 static Header*
 morecore(uint nu)
 {
-  xmutex_lock();	
   char *p;
   Header *hp;
 
-  if(nu < 4096)
-    nu = 4096;
-  
-  p = mmap_palloc(nu*sizeof(Header),0);
+  uint nbytes = nu * sizeof(Header);
 
-  if(p == (char*)-1)
-    return 0;
+  if(nbytes < 4096)
+    nbytes = 4096;
+  
+  p = mmap_palloc(nbytes);
+
   hp = (Header*)p;
   hp->s.size = nu;
-  xfree((void*)(hp + 1));
-  xmutex_unlock();	
+  xfree((void*)(hp + 1));	
   return freep;
 }
 
 void*
 xmalloc(uint nbytes)
 {
-  xmutex_lock();	
+  xmutex_lock(MALLOC_LOCK_INDEX);	
 
   Header *p, *prevp;
   uint nunits;
 
   nunits = (nbytes + sizeof(Header) - 1)/sizeof(Header) + 1;
+
   if((prevp = freep) == 0)
   {
     base.s.ptr = freep = prevp = &base;
@@ -163,14 +169,20 @@ xmalloc(uint nbytes)
         p->s.size = nunits;
       }
       freep = prevp;
+	  xmutex_unlock(MALLOC_LOCK_INDEX);
       return (void*)(p + 1);
     }
     if(p == freep)
-      if((p = morecore(nunits)) == 0)
+    {
+	  xmutex_unlock(MALLOC_LOCK_INDEX);
+	  if((p = morecore(nunits)) == 0)
+      {  
+        
         return 0;
-  }
-  xmutex_unlock();	
- 
+      }
+	  xmutex_lock(MALLOC_LOCK_INDEX);
+	}
+  }	
 }
 
 void*
@@ -185,10 +197,9 @@ xrealloc(void* prev, size_t nn)
   void* allocPtr = (void*)xmalloc(nn);
   // Below math is just a reverse engineer of calculation of number of units
   // of buffer 
-  bufferSizeBytes = (bp->s.size - 1) * sizeof(Header) + 1 - sizeof(Header); 
-  memcpy(allocPtr , bp->s.ptr , bufferSizeBytes);
-  xfree(prev);
-  prev = allocPtr;
+  size_t bufferSizeBytes = (bp->s.size - 1) * sizeof(Header);
   
+  memcpy(allocPtr , prev , bufferSizeBytes);
+  prev = allocPtr;
   return prev;
 }
