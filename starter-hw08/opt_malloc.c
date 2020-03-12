@@ -11,11 +11,29 @@
 #define handle_error(msg) \
   do { perror(msg); exit(EXIT_FAILURE); } while (0)
 
-#define NUM_OF_BUCKETS 7
-static pthread_mutex_t alloc_mutex;
+#define NUM_OF_BUCKETS 20
+#define NUM_LOCKS NUM_OF_BUCKETS
 
-// Flag to check for mutex init done or not . 
-int is_init_done = 0;
+pthread_mutex_t lock_array[NUM_LOCKS] = { PTHREAD_MUTEX_INITIALIZER };
+
+
+// Grabs the lock for xv6 memory operations
+void xmutex_lock(int lock_index)
+{
+  if(pthread_mutex_lock(&lock_array[lock_index])!=0)
+  {
+    handle_error("pthread_mutex_lock!");	  
+  }	  	
+}
+
+// Unlocks the mutex for xv6 memory operations
+void xmutex_unlock(int lock_index)
+{
+  if(pthread_mutex_unlock(&lock_array[lock_index])!=0)
+  {
+    handle_error("pthread_mutex_unlock!");	  
+  }	  	
+}
 
 typedef long Align;
 
@@ -23,14 +41,16 @@ union header {
   struct {
     union header *ptr;
     uint size;
+	uint size_bytes;
   } s;
   Align x;
 };
 
 typedef union header Header;
+
 static Header base[NUM_OF_BUCKETS];
 static Header *freep[NUM_OF_BUCKETS];
-size_t bucket_size[NUM_OF_BUCKETS] = {128, 256, 512, 1024, 2048, 4096, 6144};
+size_t bucket_size[NUM_OF_BUCKETS] = {5, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3193, 4097};
 
 size_t mini(size_t x, size_t y)
 {
@@ -48,23 +68,21 @@ size_t find_size(size_t nunits)
 
     for(i = 0; i < NUM_OF_BUCKETS; i++)
     {
-        if(bucket_size[i] >= nunits)
-        {
-            //printf("%d\n", i);
-            return i;
-        }
+      if(bucket_size[i] >= nunits)
+      {
+        return i;
+      }
     }
-    //printf("gone bad\n");
     return NUM_OF_BUCKETS + 1;
 }
 
-void add_to_free_list(void* ap, size_t bucket_num)
+void append_free_list(void* ap, size_t bucket_num)
 {
     Header *bp, *p;
 
     //printf("free\n");
     bp = (Header*)ap - 1;
-    pthread_mutex_lock(&alloc_mutex);
+    pthread_mutex_lock(&lock_array[bucket_num]);
   
     for(p = freep[bucket_num]; !(bp > p && bp < p->s.ptr); p = p->s.ptr)
         if(p >= p->s.ptr && (bp > p || bp < p->s.ptr))
@@ -82,18 +100,16 @@ void add_to_free_list(void* ap, size_t bucket_num)
 
     freep[bucket_num] = p;
 
-    pthread_mutex_unlock(&alloc_mutex);
+    pthread_mutex_unlock(&lock_array[bucket_num]);
 }
 
 void
 xfree(void *ap)
 {
   size_t bucket_num;
-
-  bucket_num = find_size(((Header*)ap - 1)->s.size);
-  //printf("num: %lu size: %d", bucket_num, ((Header*)ap - 1)->s.size);
-
-  add_to_free_list(ap, bucket_num);
+  Header *bp = (Header*)ap - 1;
+  bucket_num = find_size((bp->s.size-1)*sizeof(header));
+  append_free_list(ap, bucket_num);
 }
 
 static Header*
@@ -113,7 +129,7 @@ morecore(uint nu, size_t bucket_num)
   }
   hp = (Header*)p;
   hp->s.size = nu;
-  add_to_free_list((void*)(hp + 1), bucket_num);
+  append_free_list((void*)(hp + 1), bucket_num);
   return freep[bucket_num];
 }
 
@@ -123,18 +139,10 @@ xmalloc(uint nbytes)
   Header *p, *prevp;
   size_t nunits, bucket_num;
 
-  if(is_init_done == 0)
-  {
-    if(pthread_mutex_init(&alloc_mutex,NULL)!=0)
-    {
-      handle_error("pthread_mutex_init!");	  
-    } 	
-    is_init_done = 1;	
-  }
-
-  pthread_mutex_lock(&alloc_mutex);
+  
   nunits = (nbytes + sizeof(Header) - 1)/sizeof(Header) + 1;
   bucket_num = find_size(nunits);
+  pthread_mutex_lock(&lock_array[bucket_num]);
   if((prevp = freep[bucket_num]) == 0){
     base[bucket_num].s.ptr = freep[bucket_num] = prevp = &base[bucket_num];
     base[bucket_num].s.size = 0;
@@ -151,17 +159,17 @@ xmalloc(uint nbytes)
         p->s.size = bucket_size[bucket_num];
       }
       freep[bucket_num] = prevp;
-      pthread_mutex_unlock(&alloc_mutex);
+      pthread_mutex_unlock(&lock_array[bucket_num]);
       return (void*)(p + 1);
     }
     if(p == freep[bucket_num])
     {
-      pthread_mutex_unlock(&alloc_mutex);
+      pthread_mutex_unlock(&lock_array[bucket_num]);
       if((p = morecore(nunits, bucket_num)) == 0)
       {
         return 0;
       }
-      pthread_mutex_lock(&alloc_mutex);
+      pthread_mutex_lock(&lock_array[bucket_num]);
     }
   }   
 }
@@ -183,7 +191,7 @@ xrealloc(void* prev, size_t nn)
   old_size -= sizeof(Header);
   memcpy(new_p, old_p, mini(old_size, nn));
   bucket_num = find_size((old_p - 1)->s.size);
-  add_to_free_list((Header*)old_p, bucket_num);
+  append_free_list((Header*)old_p, bucket_num);
 
   return new_p;
 }

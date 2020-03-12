@@ -169,7 +169,7 @@ xmalloc(uint nbytes)
         p->s.size = nunits;
       }
       freep = prevp;
-	  xmutex_unlock(MALLOC_LOCK_INDEX);
+      xmutex_unlock(MALLOC_LOCK_INDEX);
       return (void*)(p + 1);
     }
     if(p == freep)
