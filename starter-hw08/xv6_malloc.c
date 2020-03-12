@@ -200,6 +200,7 @@ xrealloc(void* prev, size_t nn)
   size_t bufferSizeBytes = (bp->s.size - 1) * sizeof(Header);
   
   memcpy(allocPtr , prev , bufferSizeBytes);
+  xfree((Header*)prev);
   prev = allocPtr;
   return prev;
 }
